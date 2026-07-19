@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deutschlandticket-commute-analysis"
+version = "0.1.0"
+description = "Analysis tools for evaluating Deutschlandticket commute scenarios"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "geopandas",
+    "numpy",
+    "pandas",
+    "requests",
+    "shapely",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
