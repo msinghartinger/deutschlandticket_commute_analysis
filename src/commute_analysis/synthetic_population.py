@@ -114,6 +114,149 @@ def random_point_in_polygon(
         "Random-point generation failed for one polygon."
     )
 
+def calculate_sampling_probability_grid(
+    population_grid: gpd.GeoDataFrame,
+    population_column: str,
+    target_area: gpd.GeoDataFrame | None = None,
+    filter_mode: str = "uniform",
+    gaussian_scale: float | None = None,
+) -> gpd.GeoDataFrame:
+    """
+    Prepare a population grid and calculate the sampling probability
+    assigned to each grid cell.
+
+    Parameters
+    ----------
+    population_grid : geopandas.GeoDataFrame
+        Polygon grid containing population counts.
+    population_column : str
+        Column containing population counts.
+    target_area : geopandas.GeoDataFrame, optional
+        Area to which the grid should be clipped.
+    filter_mode : {"uniform", "gaussian"}, default "uniform"
+        "uniform" uses population alone.
+        "gaussian" multiplies population by a distance-decay factor.
+    gaussian_scale : float, optional
+        Gaussian scale in the units of the grid CRS, normally metres.
+        If omitted, the 95th percentile of cell-centroid distances is used.
+
+    Returns
+    -------
+    geopandas.GeoDataFrame
+        Processed grid with the following additional columns:
+
+        - base_population
+        - distance
+        - distance_weight
+        - sampling_weight
+        - sampling_probability
+    """
+    if population_grid.crs is None:
+        raise ValueError("population_grid must have a CRS.")
+
+    if population_column not in population_grid.columns:
+        raise KeyError(
+            f"Column {population_column!r} is missing."
+        )
+
+    if filter_mode not in {"uniform", "gaussian"}:
+        raise ValueError(
+            "filter_mode must be one of {'uniform', 'gaussian'}."
+        )
+
+    grid = population_grid.copy()
+
+    grid[population_column] = pd.to_numeric(
+        grid[population_column],
+        errors="coerce",
+    ).fillna(0)
+
+    if target_area is not None:
+        if target_area.crs is None:
+            raise ValueError("target_area must have a CRS.")
+
+        target_area = target_area.to_crs(grid.crs)
+        grid = gpd.clip(grid, target_area)
+
+    grid = grid[
+        (grid[population_column] > 0)
+        & grid.geometry.notna()
+        & ~grid.geometry.is_empty
+    ].copy()
+
+    if grid.empty:
+        raise ValueError(
+            "No populated grid cells remain after filtering."
+        )
+
+    grid["base_population"] = grid[
+        population_column
+    ].to_numpy(dtype=float)
+
+    # Defaults for population-only weighting
+    grid["distance"] = np.nan
+    grid["distance_weight"] = 1.0
+
+    if filter_mode == "gaussian":
+        if target_area is not None:
+            center = target_area.geometry.union_all().centroid
+        else:
+            center = grid.geometry.union_all().centroid
+
+        cell_centroids = grid.geometry.centroid
+
+        distances = cell_centroids.distance(center).to_numpy(
+            dtype=float
+        )
+
+        if gaussian_scale is None:
+            scale = max(
+                float(np.quantile(distances, 0.95)),
+                1.0,
+            )
+        else:
+            scale = float(gaussian_scale)
+
+            if not np.isfinite(scale) or scale <= 0:
+                raise ValueError(
+                    "gaussian_scale must be a positive finite number."
+                )
+
+        distance_weights = np.exp(
+            -0.5 * (distances / scale) ** 2
+        )
+
+        grid["distance"] = distances
+        grid["distance_weight"] = distance_weights
+
+        # Store the actual scale used for inspection
+        grid.attrs["gaussian_scale"] = scale
+
+    grid["sampling_weight"] = (
+        grid["base_population"]
+        * grid["distance_weight"]
+    )
+
+    valid_weights = np.where(
+        np.isfinite(grid["sampling_weight"])
+        & (grid["sampling_weight"] > 0),
+        grid["sampling_weight"],
+        0.0,
+    )
+
+    total_weight = valid_weights.sum()
+
+    if total_weight <= 0:
+        raise ValueError(
+            "No positive sampling weights remain after filtering."
+        )
+
+    grid["sampling_weight"] = valid_weights
+    grid["sampling_probability"] = (
+        valid_weights / total_weight
+    )
+
+    return grid
 
 def sample_population_weighted_locations(
     population_grid: gpd.GeoDataFrame,
@@ -122,146 +265,40 @@ def sample_population_weighted_locations(
     target_area: gpd.GeoDataFrame | None = None,
     seed: int | None = None,
     filter_mode: str = "uniform",
+    gaussian_scale: float | None = None,
 ) -> gpd.GeoDataFrame:
     """
-    Sample synthetic locations from a polygon grid based on population weights.
-
-    This function selects grid cells with probability proportional to their
-    population values and generates a synthetic point within each selected
-    cell. The resulting GeoDataFrame contains the generated points along
-    with the employee ID and the population count of the source cell.
-
-    Parameters
-    ----------
-    population_grid : geopandas.GeoDataFrame
-        Input grid where each row represents a polygon cell. Must have a valid CRS.
-    population_column : str
-        Column name in `population_grid` containing the population counts to use for weighting.
-    n : int
-        Number of synthetic locations to generate. Must be greater than zero.
-    target_area : geopandas.GeoDataFrame, optional
-        Optional GeoDataFrame to clip the input grid to before sampling. Must have a valid CRS.
-    seed : int, optional
-        Random seed for reproducibility.
-    filter_mode : str, default "uniform"
-        Weighting strategy to apply before sampling. Supported values are
-        "uniform" (use the raw population values), and "gaussian" (multiply the population values
-        by a Gaussian decay centered on the target area centroid).
-
-    Returns
-    -------
-    geopandas.GeoDataFrame
-        A GeoDataFrame with 'employee_id', 'source_population', and 'geometry'
-        columns. The geometry column contains the generated points in the same CRS as the input grid.
-
-    Raises
-    ------
-    ValueError
-        If `population_grid` lacks a CRS, `n` is non-positive, `target_area` (if provided) lacks a CRS,
-        or no valid population cells remain after filtering.
-    KeyError
-        If `population_column` does not exist in `population_grid`.
+    Sample synthetic locations from a population-weighted polygon grid.
     """
-    # Validate that the input grid has a defined coordinate reference system
-    if population_grid.crs is None:
-        raise ValueError("population_grid must have a CRS.")
-
-    # Verify that the specified population column exists in the grid
-    if population_column not in population_grid.columns:
-        raise KeyError(
-            f"Column {population_column!r} is missing."
-        )
-
-    # Ensure the requested sample size is valid
     if n <= 0:
         raise ValueError("n must be greater than zero.")
 
-    grid = population_grid.copy()
+    grid = calculate_sampling_probability_grid(
+        population_grid=population_grid,
+        population_column=population_column,
+        target_area=target_area,
+        filter_mode=filter_mode,
+        gaussian_scale=gaussian_scale,
+    )
 
-    # Convert population values to numeric, replacing errors with 0
-    grid[population_column] = pd.to_numeric(
-        grid[population_column],
-        errors="coerce",
-    ).fillna(0)
-
-    # If a target area is provided, clip the grid to that area
-    if target_area is not None:
-        if target_area.crs is None:
-            raise ValueError("target_area must have a CRS.")
-
-        # Reproject target area to match the grid's CRS before clipping
-        target_area = target_area.to_crs(grid.crs)
-        grid = gpd.clip(grid, target_area)
-
-    # Filter grid to keep only valid cells with positive population
-    grid = grid[
-        (grid[population_column] > 0)
-        & grid.geometry.notna()
-        & ~grid.geometry.is_empty
-    ].copy()
-
-    # Raise an error if no valid population cells remain after filtering
-    if grid.empty:
-        raise ValueError(
-            "No populated grid cells remain after filtering."
-        )
-
-    if filter_mode not in {"uniform", "gaussian"}:
-        raise ValueError(
-            "filter_mode must be one of {'uniform', 'gaussian'}."
-        )
-
-    # Initialize a random number generator with the provided seed
     rng = np.random.default_rng(seed)
 
-    # Calculate sampling weights normalized by the selected weighting strategy.
-    base_population = grid[population_column].to_numpy(dtype=float)
-    if filter_mode == "uniform":
-        weights = base_population
-    elif filter_mode == "gaussian":
-        if target_area is not None:
-            center = unary_union(target_area.geometry.tolist())
-        else:
-            center = unary_union(grid.geometry.tolist())
-
-        center = center.centroid
-        cell_centroids = grid.geometry.centroid
-        distances = np.array(
-            [center.distance(centroid) for centroid in cell_centroids],
-            dtype=float,
-        )
-        scale = max(float(np.quantile(distances, 0.95)), 1.0)
-        gaussian = np.exp(-0.5 * (distances / scale) ** 2)
-        weights = base_population * gaussian
-    else:
-        weights = base_population
-
-    weights = np.where(np.isfinite(weights) & (weights > 0), weights, 0.0)
-    if weights.sum() <= 0:
-        raise ValueError("No positive sampling weights remain after filtering.")
-
-    weights /= weights.sum()
-
-    # Select n grid indices based on the calculated population weights
     selected_positions = rng.choice(
         len(grid),
         size=n,
         replace=True,
-        p=weights,
+        p=grid["sampling_probability"].to_numpy(),
     )
 
-    # Retrieve the geometries corresponding to the selected positions
-    selected_cells = grid.iloc[selected_positions].reset_index(
-        drop=True
-    )
+    selected_cells = grid.iloc[
+        selected_positions
+    ].reset_index(drop=True)
 
-    # Generate a random point within each selected cell's polygon
     points = [
         random_point_in_polygon(geometry, rng)
         for geometry in selected_cells.geometry
     ]
 
-    # Construct and return the result GeoDataFrame
     result = gpd.GeoDataFrame(
         {
             "employee_id": [
@@ -269,7 +306,11 @@ def sample_population_weighted_locations(
                 for i in range(1, n + 1)
             ],
             "source_population":
-                selected_cells[population_column].to_numpy(),
+                selected_cells["base_population"].to_numpy(),
+            "source_probability":
+                selected_cells["sampling_probability"].to_numpy(),
+            "distance_weight":
+                selected_cells["distance_weight"].to_numpy(),
         },
         geometry=points,
         crs=grid.crs,
