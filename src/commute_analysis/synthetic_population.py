@@ -317,3 +317,4 @@ def sample_population_weighted_locations(
     )
 
     return result
+
