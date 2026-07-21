@@ -208,6 +208,38 @@ def _normalize_leg_mode(value: object) -> str | None:
     return str(value).lower()
 
 
+def _compute_option_duration_min(itinerary_rows: gpd.GeoDataFrame) -> float:
+    """Compute end-to-end duration for one itinerary option in minutes.
+
+    Duration is defined as the elapsed time from the first leg departure to the
+    final arrival at destination, where final arrival is computed as
+    departure_time + travel_time on each leg.
+    """
+    if itinerary_rows.empty:
+        return 0.0
+
+    has_time_columns = {"departure_time", "travel_time"}.issubset(itinerary_rows.columns)
+    if has_time_columns:
+        valid_rows = itinerary_rows[
+            itinerary_rows["departure_time"].notna() & itinerary_rows["travel_time"].notna()
+        ].copy()
+        if not valid_rows.empty:
+            valid_rows["arrival_time"] = valid_rows["departure_time"] + valid_rows["travel_time"]
+            first_departure = valid_rows["departure_time"].min()
+            final_arrival = valid_rows["arrival_time"].max()
+            if pd.notna(first_departure) and pd.notna(final_arrival):
+                return float((final_arrival - first_departure).total_seconds() / 60.0)
+
+    # Fallback for unexpected schemas: sum leg travel times.
+    if "travel_time" in itinerary_rows.columns:
+        return float(
+            itinerary_rows["travel_time"].apply(
+                lambda value: value.total_seconds() / 60.0 if pd.notna(value) else 0.0
+            ).sum()
+        )
+    return 0.0
+
+
 def route_between_points(
     origin: Point | tuple[float, float] | gpd.GeoSeries | gpd.GeoDataFrame,
     destination: Point | tuple[float, float] | gpd.GeoSeries | gpd.GeoDataFrame,
@@ -366,11 +398,7 @@ def route_between_points(
                 best_option = None
                 best_key = None
                 for option_value, option_rows in option_groups:
-                    option_duration_min = float(
-                        option_rows["travel_time"].apply(
-                            lambda value: value.total_seconds() / 60.0 if pd.notna(value) else None
-                        ).sum()
-                    )
+                    option_duration_min = _compute_option_duration_min(option_rows)
                     option_distance_km = float(option_rows["distance"].sum() / 1000.0)
                     key = (option_duration_min, option_distance_km)
                     if best_key is None or key < best_key:
@@ -389,7 +417,7 @@ def route_between_points(
             itinerary_gdf["leg_index"] = range(len(itinerary_gdf))
 
             total_distance_km = float(itinerary_gdf["distance_km"].sum())
-            total_duration_min = float(itinerary_gdf["duration_min"].sum())
+            total_duration_min = _compute_option_duration_min(itinerary_gdf)
 
             candidate_results.append(
                 {

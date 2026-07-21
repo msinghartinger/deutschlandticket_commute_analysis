@@ -362,6 +362,149 @@ def _line_midpoint(geom: object) -> Point | None:
 	return None
 
 
+def _iter_line_strings(geom: object) -> list[LineString]:
+	if isinstance(geom, LineString):
+		return [geom]
+	if isinstance(geom, MultiLineString):
+		return [line for line in geom.geoms if isinstance(line, LineString) and len(line.coords) >= 2]
+	return []
+
+
+def plot_transport_score_routes(
+	*,
+	summary_gdf: gpd.GeoDataFrame,
+	route_gdf: gpd.GeoDataFrame,
+	workplace: PointLike,
+	title: str | None = None,
+	figsize: tuple[float, float] = (12, 10),
+	ax: Axes | None = None,
+	add_basemap: bool = True,
+	show_axis: bool = False,
+	fit_bounds: bool = True,
+	fit_bounds_padding_fraction: float = 0.02,
+	home_markersize: float = 28,
+	workplace_markersize: float = 140,
+	route_linewidth: float = 4,
+	route_alpha: float = 0.95,
+	home_alpha: float = 0.95,
+	score_cmap: str = "viridis",
+	show_colorbar: bool = True,
+	colorbar_label: str = "Transport score",
+	basemap_alpha: float = 0.5,
+) -> Axes:
+	"""Plot employee homes and morning q25 routes colored by transport score."""
+	if summary_gdf.empty:
+		raise ValueError("summary_gdf is empty.")
+	if route_gdf.empty:
+		raise ValueError("route_gdf is empty.")
+
+	for required in ["employee_id", "transport_score"]:
+		if required not in summary_gdf.columns:
+			raise ValueError(f"summary_gdf must contain '{required}'.")
+
+	for required in ["employee_id", "morning_q25_route"]:
+		if required not in route_gdf.columns:
+			raise ValueError(f"route_gdf must contain '{required}'.")
+
+	_require_crs(summary_gdf, "summary_gdf")
+	_require_crs(route_gdf, "route_gdf")
+
+	merged = route_gdf.merge(
+		summary_gdf[["employee_id", "transport_score"]],
+		on="employee_id",
+		how="inner",
+	)
+	if merged.empty:
+		raise ValueError("No overlapping employee_id values between summary_gdf and route_gdf.")
+
+	first_crs = summary_gdf.crs if summary_gdf.crs is not None else route_gdf.crs
+	target_crs = _get_target_crs("matplotlib", add_basemap, first_crs)
+	summary_plot = summary_gdf.to_crs(target_crs).copy()
+	merged_plot = gpd.GeoDataFrame(merged, geometry="morning_q25_route", crs=route_gdf.crs).to_crs(target_crs)
+	workplace_plot = _point_to_gdf(workplace, target_crs, "workplace")
+
+	if ax is None:
+		_, ax = plt.subplots(figsize=figsize)
+
+	if add_basemap:
+		contextily = _require_optional_dependency(
+			"contextily",
+			"contextily is required when add_basemap=True for matplotlib backend.",
+		)
+
+	norm = mcolors.Normalize(vmin=0.0, vmax=1.0)
+	cmap = cm.get_cmap(score_cmap)
+	perfect_color = cmap(norm(1.0))
+
+	for _, row in merged_plot.iterrows():
+		geom = row.get("morning_q25_route")
+		score = float(pd.to_numeric(pd.Series([row.get("transport_score")]), errors="coerce").iloc[0])
+		if geom is None or getattr(geom, "is_empty", True):
+			continue
+		route_color = cmap(norm(max(0.0, min(1.0, score))))
+		gpd.GeoSeries([geom], crs=merged_plot.crs).plot(
+			ax=ax,
+			color=[route_color],
+			linewidth=route_linewidth,
+			alpha=route_alpha,
+			zorder=4,
+		)
+
+	summary_plot.plot(
+		ax=ax,
+		column="transport_score",
+		cmap=score_cmap,
+		norm=norm,
+		markersize=home_markersize,
+		alpha=home_alpha,
+		zorder=5,
+	)
+
+	workplace_plot.plot(
+		ax=ax,
+		marker="*",
+		color=[perfect_color],
+		markersize=workplace_markersize,
+		zorder=6,
+	)
+
+	legend_handles = [
+		Line2D([0], [0], marker="*", color="w", markerfacecolor=mcolors.to_hex(perfect_color), markersize=12),
+		Line2D([0], [0], marker="o", color="w", markerfacecolor="#666666", markersize=8),
+	]
+	ax.legend(legend_handles, ["Workplace", "Employee homes"], loc="best")
+
+	if show_colorbar:
+		sm = cm.ScalarMappable(norm=norm, cmap=score_cmap)
+		sm.set_array([])
+		plt.colorbar(sm, ax=ax, fraction=0.035, pad=0.02, label=colorbar_label)
+
+	bounds = _series_bounds([summary_plot, merged_plot, workplace_plot])
+	if fit_bounds and bounds is not None:
+		minx, miny, maxx, maxy = bounds
+		dx = max(maxx - minx, 1e-9)
+		dy = max(maxy - miny, 1e-9)
+		pad_x = dx * max(float(fit_bounds_padding_fraction), 0.0)
+		pad_y = dy * max(float(fit_bounds_padding_fraction), 0.0)
+		ax.set_xlim(minx - pad_x, maxx + pad_x)
+		ax.set_ylim(miny - pad_y, maxy + pad_y)
+
+	if add_basemap:
+		contextily.add_basemap(
+			ax,
+			source=contextily.providers.OpenStreetMap.Mapnik,
+			crs=target_crs,
+			reset_extent=False,
+			alpha=basemap_alpha,
+		)
+
+	if title is not None:
+		ax.set_title(title)
+	if not show_axis:
+		ax.set_axis_off()
+	return ax
+
+
 def plot_commute_map(
 	*,
 	probability_grid: gpd.GeoDataFrame | None = None,
@@ -1036,5 +1179,6 @@ __all__ = [
 	"plot_sampling_probability_map",
 	"plot_synthetic_employees",
 	"plot_routes",
+	"plot_transport_score_routes",
 ]
 
