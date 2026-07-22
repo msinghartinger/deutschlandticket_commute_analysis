@@ -2,7 +2,7 @@
 import geopandas as gpd
 from shapely.geometry import Point
 
-# create a geopandas.GeoDataFrame target_area that filters a circular area of 30 km radius around the center point (53.686439, 10.046120)
+# create a geopandas.GeoDataFrame target_area that filters a circular area
 def create_target_area(center_lat, center_lon, radius_km):
     center = Point(center_lon, center_lat)
 

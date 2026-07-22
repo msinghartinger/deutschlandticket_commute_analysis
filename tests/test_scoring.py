@@ -9,6 +9,7 @@ import pandas as pd
 import geopandas as gpd
 import pytest
 from datetime import time
+from shapely.geometry import Point
 
 from commute_analysis import routing, scoring
 
@@ -185,3 +186,205 @@ def _generate_departure_times(start_time, end_time, interval):
         current_minutes += interval_minutes
     
     return times
+
+
+def test_calculate_transport_scores_for_geodataframe_saves_incrementally(tmp_path, monkeypatch):
+    """Test that each employee is written to disk as soon as it finishes processing."""
+    employee_gdf = gpd.GeoDataFrame(
+        {
+            "employee_id": [1, 2],
+            "home": [Point(10.0, 53.0), Point(10.1, 53.1)],
+        },
+        geometry="home",
+        crs="EPSG:4326",
+    )
+
+    def fake_row(employee_id, home, home_crs):
+        return {
+            "total_travel_time": float(employee_id) * 10.0,
+            "transport_score": float(employee_id) * 0.1,
+            "relative_time_score": 0.1,
+            "absolute_time_score": 0.2,
+            "consistency_score": 0.3,
+            "walking_score": 0.4,
+            "transfers_score": 0.5,
+            "morning_q25_route": Point(home.x, home.y),
+        }
+
+    saved_frames = []
+
+    def fake_to_file(self, output_path, driver=None, mode=None, layer=None, **kwargs):
+        if mode == "w":
+            Path(output_path).touch()
+        geometry_column_count = len(self.select_dtypes(include=["geometry"]).columns)
+        saved_frames.append(
+            {
+                "path": Path(output_path).name,
+                "mode": mode,
+                "layer": layer,
+                "rows": len(self),
+                "geometry": self.geometry.name,
+                "geometry_column_count": geometry_column_count,
+            }
+        )
+
+    monkeypatch.setattr(scoring, "_calculate_employee_transport_score_row", fake_row)
+    monkeypatch.setattr(gpd.GeoDataFrame, "to_file", fake_to_file, raising=False)
+
+    summary_gdf, route_gdf = scoring.calculate_transport_scores_for_geodataframe(
+        employee_gdf=employee_gdf,
+        employee_id_column="employee_id",
+        home_column="home",
+        max_workers=1,
+        save_df=True,
+        save_dir=tmp_path,
+    )
+
+    assert len(summary_gdf) == 2
+    assert len(route_gdf) == 2
+    assert [item["path"] for item in saved_frames] == [
+        "summary_gdf.gpkg",
+        "route_gdf.gpkg",
+        "summary_gdf.gpkg",
+        "route_gdf.gpkg",
+    ]
+    assert [item["mode"] for item in saved_frames] == ["w", "w", "a", "a"]
+    assert [item["rows"] for item in saved_frames] == [1, 1, 1, 1]
+    assert [item["geometry_column_count"] for item in saved_frames] == [1, 1, 1, 1]
+
+
+def test_calculate_transport_scores_for_geodataframe_skips_existing_saved_rows(tmp_path, monkeypatch):
+    """Test that preexisting saved rows are skipped when overwrite is False."""
+    employee_gdf = gpd.GeoDataFrame(
+        {
+            "employee_id": [1, 2, 3],
+            "home": [Point(10.0, 53.0), Point(10.1, 53.1), Point(10.2, 53.2)],
+        },
+        geometry="home",
+        crs="EPSG:4326",
+    )
+
+    summary_path = tmp_path / "summary_gdf.gpkg"
+    route_path = tmp_path / "route_gdf.gpkg"
+    summary_path.touch()
+    route_path.touch()
+
+    saved_outputs = {
+        "summary_gdf.gpkg": gpd.GeoDataFrame(
+            {
+                "employee_id": [1],
+                "home": [Point(10.0, 53.0)],
+                "total_travel_time": [11.0],
+                "transport_score": [0.11],
+                "relative_time_score": [0.1],
+                "absolute_time_score": [0.2],
+                "consistency_score": [0.3],
+                "walking_score": [0.4],
+                "transfers_score": [0.5],
+            },
+            geometry="home",
+            crs="EPSG:4326",
+        ),
+        "route_gdf.gpkg": gpd.GeoDataFrame(
+            {
+                "employee_id": [1],
+                "home": [Point(10.0, 53.0).wkt],
+                "morning_q25_route": [Point(10.0, 53.0)],
+            },
+            geometry="morning_q25_route",
+            crs="EPSG:4326",
+        ),
+    }
+    processed_ids = []
+
+    def fake_read_file(path, layer=None, **kwargs):
+        return saved_outputs[Path(path).name].copy()
+
+    def fake_row(employee_id, home, home_crs):
+        processed_ids.append(employee_id)
+        return {
+            "total_travel_time": float(employee_id) * 10.0,
+            "transport_score": float(employee_id) * 0.1,
+            "relative_time_score": 0.1,
+            "absolute_time_score": 0.2,
+            "consistency_score": 0.3,
+            "walking_score": 0.4,
+            "transfers_score": 0.5,
+            "morning_q25_route": Point(home.x, home.y),
+        }
+
+    def fake_to_file(self, output_path, driver=None, mode=None, layer=None, **kwargs):
+        name = Path(output_path).name
+        frame = self.copy()
+        geometry_columns = list(frame.select_dtypes(include=["geometry"]).columns)
+        for column in geometry_columns:
+            if column == frame.geometry.name:
+                continue
+            frame[column] = frame[column].to_wkt()
+        if mode == "w" or name not in saved_outputs:
+            saved_outputs[name] = frame
+        else:
+            saved_outputs[name] = pd.concat([saved_outputs[name], frame], ignore_index=True)
+        Path(output_path).touch()
+
+    monkeypatch.setattr(gpd, "read_file", fake_read_file)
+    monkeypatch.setattr(scoring, "_calculate_employee_transport_score_row", fake_row)
+    monkeypatch.setattr(gpd.GeoDataFrame, "to_file", fake_to_file, raising=False)
+
+    summary_gdf, route_gdf = scoring.calculate_transport_scores_for_geodataframe(
+        employee_gdf=employee_gdf,
+        employee_id_column="employee_id",
+        home_column="home",
+        max_workers=1,
+        save_df=True,
+        save_dir=tmp_path,
+        overwrite=False,
+    )
+
+    assert processed_ids == [2, 3]
+    assert sorted(summary_gdf["employee_id"].tolist()) == [1, 2, 3]
+    assert sorted(route_gdf["employee_id"].tolist()) == [1, 2, 3]
+
+
+def test_load_transport_scores_from_gpkg(tmp_path, monkeypatch):
+    """Test loading saved score outputs from summary and route GeoPackages."""
+    summary_path = tmp_path / "summary_gdf.gpkg"
+    route_path = tmp_path / "route_gdf.gpkg"
+    summary_path.touch()
+    route_path.touch()
+
+    summary_source = gpd.GeoDataFrame(
+        {
+            "employee_id": [1],
+            "home": [Point(10.0, 53.0)],
+            "transport_score": [0.85],
+        },
+        geometry="home",
+        crs="EPSG:4326",
+    )
+    route_source = gpd.GeoDataFrame(
+        {
+            "employee_id": [1],
+            "home": [Point(10.0, 53.0).wkt],
+            "morning_q25_route": [Point(10.1, 53.1)],
+        },
+        geometry="morning_q25_route",
+        crs="EPSG:4326",
+    )
+
+    def fake_read_file(path, layer=None, **kwargs):
+        if Path(path).name == "summary_gdf.gpkg":
+            return summary_source.copy()
+        if Path(path).name == "route_gdf.gpkg":
+            return route_source.copy()
+        raise AssertionError(f"Unexpected path: {path}")
+
+    monkeypatch.setattr(gpd, "read_file", fake_read_file)
+
+    summary_gdf, route_gdf = scoring.load_transport_scores_from_gpkg(save_dir=tmp_path)
+
+    assert len(summary_gdf) == 1
+    assert len(route_gdf) == 1
+    assert summary_gdf.geometry.name == "home"
+    assert route_gdf.geometry.name == "morning_q25_route"
+    assert isinstance(route_gdf.loc[0, "home"], Point)

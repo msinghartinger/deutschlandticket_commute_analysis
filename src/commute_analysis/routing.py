@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import subprocess
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Iterable
+import numpy as np
 
 import geopandas as gpd
 import pandas as pd
@@ -463,3 +464,89 @@ def route_between_points(
         return None, None, None
 
     return best_row["distance_km"], best_row["duration_min"], best_row["itinerary_gdf"]
+
+def calculate_reachable_grid(
+    transport_network: TransportNetwork,
+    origin: gpd.GeoDataFrame,
+    departure_time: datetime,
+    *,
+    departure_time_window: timedelta = timedelta(minutes=60),
+    analysis_radius_m: float = 20_000,
+    grid_step_m: float = 100,
+    max_travel_time_min: float = 60,
+) -> gpd.GeoDataFrame:
+    """Calculate public-transport travel times to a regular grid around origin."""
+    origin_wgs84 = origin.to_crs("EPSG:4326")
+    origin_projected = origin.to_crs("EPSG:25832")
+    center = origin_projected.geometry.iloc[0]
+
+    # Ensure origin has a unique 'id' column for r5py.TravelTimeMatrix
+    if "id" not in origin_wgs84.columns or not origin_wgs84["id"].is_unique:
+        origin_wgs84 = origin_wgs84.copy()
+        origin_wgs84["id"] = range(len(origin_wgs84))
+
+    xs = np.arange(
+        center.x - analysis_radius_m,
+        center.x + analysis_radius_m + grid_step_m,
+        grid_step_m,
+    )
+    ys = np.arange(
+        center.y - analysis_radius_m,
+        center.y + analysis_radius_m + grid_step_m,
+        grid_step_m,
+    )
+
+    points = [
+        Point(x, y)
+        for x in xs
+        for y in ys
+        if Point(x, y).distance(center) <= analysis_radius_m
+    ]
+
+    destinations = gpd.GeoDataFrame(
+        {"id": range(1, len(points) + 1)},
+        geometry=points,
+        crs="EPSG:25832",
+    ).to_crs("EPSG:4326")
+
+    ttm = r5py.TravelTimeMatrix(
+        transport_network,
+        origins=origin_wgs84,
+        destinations=destinations,
+        departure=departure_time,
+        departure_time_window=departure_time_window,
+        transport_modes=[TransportMode.TRANSIT, TransportMode.WALK],
+        snap_to_network=True,
+    )
+
+    if ttm.empty:
+        return destinations.iloc[0:0].assign(travel_time_min=np.nan)
+
+    travel_time = ttm["travel_time"]
+
+    if pd.api.types.is_timedelta64_dtype(travel_time):
+        ttm["travel_time_min"] = travel_time.dt.total_seconds() / 60
+    else:
+        ttm["travel_time_min"] = pd.to_numeric(
+            travel_time,
+            errors="coerce",
+        )
+
+    reachable = (
+        ttm.loc[
+            ttm["travel_time_min"].notna()
+            & ttm["travel_time_min"].between(
+                0,
+                max_travel_time_min,
+                inclusive="right",
+            )
+        ]
+        .groupby("to_id", as_index=False)["travel_time_min"]
+        .min()
+        .rename(columns={"to_id": "id"})
+    )
+
+    result = destinations.merge(reachable, on="id", how="inner")
+    result["grid_step_m"] = grid_step_m
+    result["departure_time"] = departure_time
+    return result

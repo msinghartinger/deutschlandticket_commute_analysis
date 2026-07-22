@@ -9,9 +9,11 @@ from .scoring import (
     EmployeeRoutingBatchResult,
     calculate_car_record,
     calculate_public_transport_record,
+    load_transport_scores_from_gpkg,
     _extract_number_of_transfers,
     _extract_total_walking_time,
 )
+from .notebook_utils import prepare_probability_grid, to_gpd_point
 
 try:
     from .visualization import (
@@ -34,6 +36,9 @@ __all__ = [
     "EmployeeRoutingBatchResult",
     "calculate_car_record",
     "calculate_public_transport_record",
+    "load_transport_scores_from_gpkg",
+    "prepare_probability_grid",
+    "to_gpd_point",
 ]
 
 if _HAS_VISUALIZATION:
