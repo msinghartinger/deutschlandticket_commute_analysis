@@ -8,6 +8,7 @@ This project evaluates how attractive public transport is for a set of synthetic
 - [notebooks/deutschlandticket_analysis.ipynb](notebooks/deutschlandticket_analysis.ipynb): the full analysis notebook.
 - [notebooks/deutschlandticket_analysis.html](notebooks/deutschlandticket_analysis.html): HTML export of the notebook.
 - [notebooks/deutschlandticket_analysis.pdf](notebooks/deutschlandticket_analysis.pdf): PDF export of the notebook.
+- [notebooks/download_data.ipynb](notebooks/download_data.ipynb): helper notebook to download and prepare raw input data.
 
 ## Project Components
 
@@ -48,9 +49,21 @@ For development and testing:
 
 ## Quick Start
 
-1. Install the Python dependencies and Java runtime needed by `r5py`.
-2. Open [notebooks/deutschlandticket_analysis.ipynb](notebooks/deutschlandticket_analysis.ipynb).
-3. Run the notebook to reproduce the figures, maps, score tables, and exported HTML/PDF deliverables.
+1. Install the Python dependencies, Java runtime (for `r5py`), and `osmium` CLI (for OSM merge).
+2. Open and run [notebooks/download_data.ipynb](notebooks/download_data.ipynb) from top to bottom.
+3. Confirm these files exist after the download notebook finishes:
+	- `data/raw/population_grid.csv`
+	- `data/raw/hvv_Rohdaten_GTFS_Fpl_26.ZIP`
+	- `data/raw/osm/hamburg-260718.osm.pbf`
+	- `data/raw/osm/niedersachsen-260718.osm.pbf`
+	- `data/raw/osm/schleswig-holstein-260718.osm.pbf`
+	- `data/raw/osm/merged/northern-germany.osm.pbf`
+4. Open and run [notebooks/deutschlandticket_analysis.ipynb](notebooks/deutschlandticket_analysis.ipynb).
+
+## Data Handling
+
+- Raw data under `data/raw/` is intentionally not tracked in Git.
+- Recreate raw inputs at any time by running [notebooks/download_data.ipynb](notebooks/download_data.ipynb).
 
 ## Repository Layout
 
