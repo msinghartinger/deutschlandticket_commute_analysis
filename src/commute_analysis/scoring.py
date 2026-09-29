@@ -18,52 +18,16 @@ from shapely.ops import linemerge, unary_union
 
 # Import routing helper functions from the same package
 from .routing import build_transport_network, route_between_points
+from . import config
 
-# =============================================================================
-# Configuration Constants
-# =============================================================================
-
-# Date used for calculating all travel metrics and routing
-SERVICE_DATE = date(2026, 9, 15)
-
-# Commute time windows used for departure time generation
-MORNING_START = time(7, 0)
-MORNING_END = time(9, 0)
-
-EVENING_START = time(16, 0)
-EVENING_END = time(18, 0)
-
-# Interval between consecutive departure time checks
-DEPARTURE_INTERVAL = timedelta(minutes=10)
-
-# Fixed coordinates for the workplace location used in all calculations
-WORKPLACE = (53.686439, 10.046120)
-WORKPLACE_CRS = "EPSG:4326"
-
-# =============================================================================
-# Scoring Weights
-# =============================================================================
-# Weights are used to calculate the final transport score based on component scores.
-# The sum must equal 1.0 to ensure a valid weighted average.
-
-RELATIVE_TIME_WEIGHT = 0.25
-ABSOLUTE_TIME_WEIGHT = 0.25
-CONSISTENCY_WEIGHT = 0.30
-WALKING_WEIGHT = 0.10
-TRANSFERS_WEIGHT = 0.10
-
-assert abs(
-    RELATIVE_TIME_WEIGHT + ABSOLUTE_TIME_WEIGHT + CONSISTENCY_WEIGHT + WALKING_WEIGHT + TRANSFERS_WEIGHT - 1.0
-) < 1e-9, "Weights must sum to 1.0"
-
-# Note: The following commented-out weights were used for a previous convenience metric calculation.
-# Per trip convenience score weight
-# TIME_CONVENIENCE_WEIGHT = 0.5
-# TRANSFERS_CONVENIENCE_WEIGHT = 0.25
-# WALKING_CONVENIENCE_WEIGHT = 0.25
-
-# assert abs(TIME_CONVENIENCE_WEIGHT + TRANSFERS_CONVENIENCE_WEIGHT + WALKING_CONVENIENCE_WEIGHT - 1.0) < 1e-9, "Convenience weights must sum to 1.0"
-
+SERVICE_DATE = config.SERVICE_DATE
+MORNING_START = config.MORNING_START
+MORNING_END = config.MORNING_END
+EVENING_START = config.EVENING_START
+EVENING_END = config.EVENING_END
+DEPARTURE_INTERVAL = config.DEPARTURE_INTERVAL
+WORKPLACE = config.WORKPLACE
+WORKPLACE_CRS = config.WORKPLACE_CRS
 
 # Type alias for flexible input types representing a point location
 PointLike = Point | tuple[float, float] | gpd.GeoSeries | gpd.GeoDataFrame
@@ -291,7 +255,7 @@ def calculate_car_record(
     employee_id: int | str,
     direction: Literal["morning", "evening"],
     home: PointLike,
-    home_crs: Any = "EPSG:4326",
+    home_crs: Any = config.CRS_WGS84,
 ) -> pd.DataFrame:
     """Calculate travel metrics for a single employee using car transport.
 
@@ -308,27 +272,27 @@ def calculate_car_record(
         DataFrame with a single row containing employee_id, direction, departure_time,
         travel_time, and distance.
     """
-    home_point = _coerce_point(home, crs="EPSG:4326", name="home", input_crs=home_crs)
+    home_point = _coerce_point(home, crs=config.CRS_WGS84, name="home", input_crs=home_crs)
     workplace_point = _coerce_point(
-        WORKPLACE,
-        crs="EPSG:4326",
+        config.WORKPLACE,
+        crs=config.CRS_WGS84,
         name="WORKPLACE",
-        input_crs=WORKPLACE_CRS,
+        input_crs=config.WORKPLACE_CRS,
     )
 
     if direction == "morning":
-        departure_time = MORNING_START
+        departure_time = config.MORNING_START
         origin = home_point
         destination = workplace_point
     elif direction == "evening":
-        departure_time = EVENING_START
+        departure_time = config.EVENING_START
         origin = workplace_point
         destination = home_point
     else:
         raise ValueError(f"Direction must be 'morning' or 'evening', got '{direction}'")
 
     # Combine date and time into a datetime object for routing
-    departure_datetime = datetime.combine(SERVICE_DATE, departure_time)
+    departure_datetime = datetime.combine(config.SERVICE_DATE, departure_time)
 
     # Route between points using car transport mode
     distance_km, duration_min, _ = route_between_points(
@@ -353,7 +317,7 @@ def calculate_public_transport_record(
     employee_id: int | str,
     direction: Literal["morning", "evening"],
     home: PointLike,
-    home_crs: Any = "EPSG:4326",
+    home_crs: Any = config.CRS_WGS84,
     include_route_gdf: bool = False,
 ) -> pd.DataFrame:
     """Calculate travel metrics for a single employee using public transport.
@@ -372,22 +336,22 @@ def calculate_public_transport_record(
         DataFrame with rows for each departure time containing employee_id, direction,
         departure_time, travel_time, number_of_transfers, and total_walking_time.
     """
-    home_point = _coerce_point(home, crs="EPSG:4326", name="home", input_crs=home_crs)
+    home_point = _coerce_point(home, crs=config.CRS_WGS84, name="home", input_crs=home_crs)
     workplace_point = _coerce_point(
-        WORKPLACE,
-        crs="EPSG:4326",
+        config.WORKPLACE,
+        crs=config.CRS_WGS84,
         name="WORKPLACE",
-        input_crs=WORKPLACE_CRS,
+        input_crs=config.WORKPLACE_CRS,
     )
 
     if direction == "morning":
-        start_time = MORNING_START
-        end_time = MORNING_END
+        start_time = config.MORNING_START
+        end_time = config.MORNING_END
         origin = home_point
         destination = workplace_point
     elif direction == "evening":
-        start_time = EVENING_START
-        end_time = EVENING_END
+        start_time = config.EVENING_START
+        end_time = config.EVENING_END
         origin = workplace_point
         destination = home_point
     else:
@@ -396,7 +360,7 @@ def calculate_public_transport_record(
     # Generate all departure times from start to end in intervals
     start_minutes = start_time.hour * 60 + start_time.minute
     end_minutes = end_time.hour * 60 + end_time.minute
-    interval_minutes = int(DEPARTURE_INTERVAL.total_seconds() // 60)
+    interval_minutes = int(config.DEPARTURE_INTERVAL.total_seconds() // 60)
 
     departure_times = []
     current_minutes = start_minutes
@@ -409,7 +373,7 @@ def calculate_public_transport_record(
     results = []
     for departure_time in departure_times:
         # Combine date and time into a datetime object for routing
-        departure_datetime = datetime.combine(SERVICE_DATE, departure_time)
+        departure_datetime = datetime.combine(config.SERVICE_DATE, departure_time)
 
         # Route between points using public transit transport mode
         distance_km, duration_min, route_gdf = route_between_points(
@@ -498,8 +462,8 @@ def _pt_travel_time_p25_total(*, pt_route_record: pd.DataFrame) -> float:
         Sum of the 25th percentile travel times for both directions in minutes.
     """
     return (
-        _percentile_value(_subset_direction(pt_route_record, "morning"), "travel_time", 0.25)
-        + _percentile_value(_subset_direction(pt_route_record, "evening"), "travel_time", 0.25)
+        _percentile_value(_subset_direction(pt_route_record, "morning"), "travel_time", config.LOWER_SCORE_QUANTILE)
+        + _percentile_value(_subset_direction(pt_route_record, "evening"), "travel_time", config.LOWER_SCORE_QUANTILE)
     )
 
 
@@ -519,7 +483,7 @@ def _morning_q25_route_geometry(*, pt_route_record: pd.DataFrame) -> Any:
         raise ValueError("pt_route_record must include 'route_gdf' to extract q25 route geometry.")
 
     morning = _subset_direction(pt_route_record, "morning").copy()
-    q25 = _percentile_value(morning, "travel_time", 0.25)
+    q25 = _percentile_value(morning, "travel_time", config.LOWER_SCORE_QUANTILE)
     travel = pd.to_numeric(morning["travel_time"], errors="coerce")
     if travel.dropna().empty:
         return None
@@ -550,8 +514,8 @@ def _car_travel_time_p25_total(*, car_route_record: pd.DataFrame) -> float:
         Sum of the 25th percentile travel times for both directions in minutes.
     """
     return (
-        _percentile_value(_subset_direction(car_route_record, "morning"), "travel_time", 0.25)
-        + _percentile_value(_subset_direction(car_route_record, "evening"), "travel_time", 0.25)
+        _percentile_value(_subset_direction(car_route_record, "morning"), "travel_time", config.LOWER_SCORE_QUANTILE)
+        + _percentile_value(_subset_direction(car_route_record, "evening"), "travel_time", config.LOWER_SCORE_QUANTILE)
     )
 
 
@@ -576,8 +540,9 @@ def _score_relative_time(*, car_route_record: pd.DataFrame, pt_route_record: pd.
     if car_total <= 0:
         raise ValueError("Car travel time must be positive.")
     value = pt_total / car_total
-    # Normalize: score 0 when ratio <= 1, score 1 when ratio >= 3.5
-    score = (3.5 - value) / (3.5 - 1.0)
+    score = (config.RELATIVE_TIME_RATIO_WORST - value) / (
+        config.RELATIVE_TIME_RATIO_WORST - config.RELATIVE_TIME_RATIO_BEST
+    )
     return max(0.0, min(1.0, score))
 
 
@@ -598,7 +563,7 @@ def _score_absolute_time(*, pt_route_record: pd.DataFrame) -> float:
     """
     value = _pt_travel_time_p25_total(pt_route_record=pt_route_record)
     # Normalize: score 0 when time >= 180, score 1 when time <= 0
-    score = (180.0 - value) / 180.0
+    score = (config.MAX_PUBLIC_TRANSPORT_TIME_MIN - value) / config.MAX_PUBLIC_TRANSPORT_TIME_MIN
     return max(0.0, min(1.0, score))
 
 
@@ -620,16 +585,17 @@ def _score_consistency(*, pt_route_record: pd.DataFrame) -> float:
     direction_values: list[float] = []
     for direction in ("morning", "evening"):
         subset = _subset_direction(pt_route_record, direction)
-        q25 = _percentile_value(subset, "travel_time", 0.25)
-        q75 = _percentile_value(subset, "travel_time", 0.75)
+        q25 = _percentile_value(subset, "travel_time", config.LOWER_SCORE_QUANTILE)
+        q75 = _percentile_value(subset, "travel_time", config.UPPER_SCORE_QUANTILE)
         if q75 <= 0:
             raise ValueError(f"{direction} public transport 75th percentile must be positive.")
         direction_values.append(q75 / q25)
 
     # Average the consistency ratios across directions
     value = float(sum(direction_values) / len(direction_values))
-    # Normalize: score 0 when ratio >= 1.33, score 1 when ratio <= 1.0
-    score = (1.33 - value) / (1.33 - 1.0)
+    score = (config.CONSISTENCY_RATIO_WORST - value) / (
+        config.CONSISTENCY_RATIO_WORST - config.CONSISTENCY_RATIO_BEST
+    )
     return max(0.0, min(1.0, score))
 
 
@@ -646,11 +612,11 @@ def _score_walking(*, pt_route_record: pd.DataFrame) -> float:
         Normalized score between 0.0 and 1.0.
     """
     value = (
-        _percentile_value(_subset_direction(pt_route_record, "morning"), "total_walking_time", 0.25)
-        + _percentile_value(_subset_direction(pt_route_record, "evening"), "total_walking_time", 0.25)
+        _percentile_value(_subset_direction(pt_route_record, "morning"), "total_walking_time", config.LOWER_SCORE_QUANTILE)
+        + _percentile_value(_subset_direction(pt_route_record, "evening"), "total_walking_time", config.LOWER_SCORE_QUANTILE)
     )
     # Normalize: score 0 when walking >= 60, score 1 when walking <= 0
-    score = (60.0 - value) / 60.0
+    score = (config.MAX_DAILY_WALKING_TIME_MIN - value) / config.MAX_DAILY_WALKING_TIME_MIN
     return max(0.0, min(1.0, score))
 
 
@@ -667,11 +633,11 @@ def _score_transfers(*, pt_route_record: pd.DataFrame) -> float:
         Normalized score between 0.0 and 1.0.
     """
     value = (
-        _percentile_value(_subset_direction(pt_route_record, "morning"), "number_of_transfers", 0.25)
-        + _percentile_value(_subset_direction(pt_route_record, "evening"), "number_of_transfers", 0.25)
+        _percentile_value(_subset_direction(pt_route_record, "morning"), "number_of_transfers", config.LOWER_SCORE_QUANTILE)
+        + _percentile_value(_subset_direction(pt_route_record, "evening"), "number_of_transfers", config.LOWER_SCORE_QUANTILE)
     )
     # Normalize: score 0 when transfers >= 8, score 1 when transfers <= 0
-    score = (8.0 - value) / 8.0
+    score = (config.MAX_DAILY_TRANSFERS - value) / config.MAX_DAILY_TRANSFERS
     return max(0.0, min(1.0, score))
 
 
@@ -719,11 +685,11 @@ def calculate_transport_score(
 
     # Compute weighted final score
     transport_score = (
-        relative_time_score * RELATIVE_TIME_WEIGHT
-        + absolute_time_score * ABSOLUTE_TIME_WEIGHT
-        + consistency_score * CONSISTENCY_WEIGHT
-        + walking_score * WALKING_WEIGHT
-        + transfers_score * TRANSFERS_WEIGHT
+        relative_time_score * config.RELATIVE_TIME_WEIGHT
+        + absolute_time_score * config.ABSOLUTE_TIME_WEIGHT
+        + consistency_score * config.CONSISTENCY_WEIGHT
+        + walking_score * config.WALKING_WEIGHT
+        + transfers_score * config.TRANSFERS_WEIGHT
     )
 
     return TransportScoreResult(
@@ -741,7 +707,7 @@ def calculate_employee_transport_score(
     *,
     employee_id: int | str,
     home: PointLike,
-    home_crs: Any = "EPSG:4326",
+    home_crs: Any = config.CRS_WGS84,
 ) -> EmployeeTransportScoreResult:
     """
     Calculate route records, transport score, and summed PT 25th-percentile travel time.
@@ -874,7 +840,12 @@ def _write_geodataframe_to_file(*, gdf: gpd.GeoDataFrame, output_path: Path) -> 
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     mode = "a" if output_path.exists() else "w"
-    write_gdf.to_file(output_path, driver="GPKG", mode=mode, layer=output_path.stem)
+    write_gdf.to_file(
+        output_path,
+        driver=config.GEOPACKAGE_DRIVER,
+        mode=mode,
+        layer=output_path.stem,
+    )
 
 
 def _save_transport_score_rows(
@@ -884,8 +855,14 @@ def _save_transport_score_rows(
     save_dir: Path,
 ) -> None:
     """Persist one employee's summary and route rows to the configured output files."""
-    _write_geodataframe_to_file(gdf=summary_row, output_path=save_dir / "summary_gdf.gpkg")
-    _write_geodataframe_to_file(gdf=route_row, output_path=save_dir / "route_gdf.gpkg")
+    _write_geodataframe_to_file(
+        gdf=summary_row,
+        output_path=save_dir / config.TRANSPORT_SCORE_SUMMARY_FILENAME,
+    )
+    _write_geodataframe_to_file(
+        gdf=route_row,
+        output_path=save_dir / config.TRANSPORT_SCORE_ROUTE_FILENAME,
+    )
 
 
 def _convert_wkt_column_to_geometry(
@@ -928,8 +905,8 @@ def _convert_wkt_column_to_geometry(
 def load_transport_scores_from_gpkg(
     *,
     save_dir: str | Path,
-    summary_filename: str = "summary_gdf.gpkg",
-    route_filename: str = "route_gdf.gpkg",
+    summary_filename: str = config.TRANSPORT_SCORE_SUMMARY_FILENAME,
+    route_filename: str = config.TRANSPORT_SCORE_ROUTE_FILENAME,
 ) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
     """Load summary and route GeoDataFrames previously saved by batch scoring.
 
@@ -956,13 +933,21 @@ def load_transport_scores_from_gpkg(
     summary_crs = summary_gdf.crs
     summary_gdf = _convert_wkt_column_to_geometry(frame=summary_gdf, column="home", crs=summary_crs)
     route_gdf = _convert_wkt_column_to_geometry(frame=route_gdf, column="home", crs=summary_crs)
-    route_gdf = _convert_wkt_column_to_geometry(frame=route_gdf, column="morning_q25_route", crs="EPSG:4326")
+    route_gdf = _convert_wkt_column_to_geometry(
+        frame=route_gdf,
+        column="morning_q25_route",
+        crs=config.CRS_WGS84,
+    )
 
     if "home" in summary_gdf.columns:
         summary_gdf = gpd.GeoDataFrame(summary_gdf, geometry="home", crs=summary_crs)
 
     if "morning_q25_route" in route_gdf.columns:
-        route_gdf = gpd.GeoDataFrame(route_gdf, geometry="morning_q25_route", crs="EPSG:4326")
+        route_gdf = gpd.GeoDataFrame(
+            route_gdf,
+            geometry="morning_q25_route",
+            crs=config.CRS_WGS84,
+        )
 
     return summary_gdf, route_gdf
 
@@ -973,10 +958,10 @@ def calculate_transport_scores_for_geodataframe(
     employee_id_column: str,
     home_column: str,
     home_crs: Any | None = None,
-    max_workers: int | None = None,
-    save_df: bool = False,
+    max_workers: int | None = config.DEFAULT_SCORING_MAX_WORKERS,
+    save_df: bool = config.DEFAULT_SAVE_SCORE_OUTPUTS,
     save_dir: str | Path | None = None,
-    overwrite: bool = False,
+    overwrite: bool = config.DEFAULT_OVERWRITE_SCORE_OUTPUTS,
 ) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
     """Score all employees in a GeoDataFrame in parallel and return a reduced copy.
 
@@ -1016,8 +1001,8 @@ def calculate_transport_scores_for_geodataframe(
         if output_dir is None:
             raise ValueError("save_dir must be provided when save_df is True.")
         output_dir.mkdir(parents=True, exist_ok=True)
-        summary_path = output_dir / "summary_gdf.gpkg"
-        route_path = output_dir / "route_gdf.gpkg"
+        summary_path = output_dir / config.TRANSPORT_SCORE_SUMMARY_FILENAME
+        route_path = output_dir / config.TRANSPORT_SCORE_ROUTE_FILENAME
 
         if overwrite:
             for output_path in (summary_path, route_path):
@@ -1064,7 +1049,11 @@ def calculate_transport_scores_for_geodataframe(
         except Exception:
             summary_gdf = gpd.GeoDataFrame(empty_summary)
         try:
-            route_gdf = gpd.GeoDataFrame(empty_routes, geometry="morning_q25_route", crs="EPSG:4326")
+            route_gdf = gpd.GeoDataFrame(
+                empty_routes,
+                geometry="morning_q25_route",
+                crs=config.CRS_WGS84,
+            )
         except Exception:
             route_gdf = gpd.GeoDataFrame(empty_routes)
         return summary_gdf, route_gdf
@@ -1109,7 +1098,11 @@ def calculate_transport_scores_for_geodataframe(
 
                 route_row = selected_row.copy()
                 route_row["morning_q25_route"] = score_row["morning_q25_route"].values
-                route_row_gdf = gpd.GeoDataFrame(route_row, geometry="morning_q25_route", crs="EPSG:4326")
+                route_row_gdf = gpd.GeoDataFrame(
+                    route_row,
+                    geometry="morning_q25_route",
+                    crs=config.CRS_WGS84,
+                )
 
                 _save_transport_score_rows(
                     summary_row=summary_row_gdf,
@@ -1143,7 +1136,11 @@ def calculate_transport_scores_for_geodataframe(
         summary_gdf = gpd.GeoDataFrame(summary_result)
 
     try:
-        route_gdf = gpd.GeoDataFrame(route_result, geometry="morning_q25_route", crs="EPSG:4326")
+        route_gdf = gpd.GeoDataFrame(
+            route_result,
+            geometry="morning_q25_route",
+            crs=config.CRS_WGS84,
+        )
     except Exception:
         route_gdf = gpd.GeoDataFrame(route_result)
 
@@ -1159,10 +1156,10 @@ def calculate_transport_scores_for_geodataframes(
     employee_id_column: str,
     home_column: str,
     home_crs: Any | None = None,
-    max_workers: int | None = None,
-    save_df: bool = False,
+    max_workers: int | None = config.DEFAULT_SCORING_MAX_WORKERS,
+    save_df: bool = config.DEFAULT_SAVE_SCORE_OUTPUTS,
     save_dir: str | Path | None = None,
-    overwrite: bool = False,
+    overwrite: bool = config.DEFAULT_OVERWRITE_SCORE_OUTPUTS,
 ) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
     """Alias for calculate_transport_scores_for_geodataframe."""
     return calculate_transport_scores_for_geodataframe(

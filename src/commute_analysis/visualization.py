@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 import geopandas as gpd
@@ -12,6 +11,8 @@ import numpy as np
 import pandas as pd
 from matplotlib.lines import Line2D
 from shapely.geometry import LineString, MultiLineString, Point
+
+from . import config
 
 if TYPE_CHECKING:
     import folium
@@ -40,6 +41,8 @@ Options:
 - "matplotlib": Use Matplotlib for rendering
 - "folium": Use Folium for interactive maps
 """
+
+_OSM_TILE_HEADERS = {"User-Agent": "deutschlandticket-commute-analysis/0.1.0"}
 
 
 def _normalize_backend(backend: str) -> Backend:
@@ -161,12 +164,12 @@ def _point_to_gdf(value: PointLike, target_crs: Any, name: str) -> gpd.GeoDataFr
         If the input type is not supported.
     """
     if isinstance(value, Point):
-        gdf = gpd.GeoDataFrame(geometry=[value], crs="EPSG:4326")
+        gdf = gpd.GeoDataFrame(geometry=[value], crs=config.CRS_WGS84)
     elif isinstance(value, tuple):
         if len(value) != 2:
             raise ValueError(f"{name} tuple must be (latitude, longitude).")
         lat, lon = value
-        gdf = gpd.GeoDataFrame(geometry=[Point(lon, lat)], crs="EPSG:4326")
+        gdf = gpd.GeoDataFrame(geometry=[Point(lon, lat)], crs=config.CRS_WGS84)
     elif isinstance(value, gpd.GeoSeries):
         gdf = gpd.GeoDataFrame(geometry=value.copy(), crs=value.crs)
     elif isinstance(value, gpd.GeoDataFrame):
@@ -584,9 +587,9 @@ def _get_target_crs(
         The target CRS string.
     """
     if backend == "folium":
-        return "EPSG:4326"
+        return config.CRS_WGS84
     if backend == "matplotlib" and add_basemap:
-        return "EPSG:3857"
+        return config.CRS_WEB_MERCATOR
     return first_crs
 
 
@@ -675,17 +678,15 @@ def _has_data_for_enabled_layers(
     bool
         True if at least one enabled layer has data.
     """
-    return any(
-        [
-            show_probability_grid and probability_grid is not None,
-            show_employees and employees is not None,
-            show_target_area and target_area is not None,
-            show_workplace and workplace is not None,
-            show_routes and route_count > 0,
-            show_route_origins and route_origins is not None and route_count > 0,
-            show_route_destinations and route_destinations is not None and route_count > 0,
-        ]
-    )
+    return any((
+        show_probability_grid and probability_grid is not None,
+        show_employees and employees is not None,
+        show_target_area and target_area is not None,
+        show_workplace and workplace is not None,
+        show_routes and route_count > 0,
+        show_route_origins and route_origins is not None and route_count > 0,
+        show_route_destinations and route_destinations is not None and route_count > 0,
+    ))
 
 
 def _require_optional_dependency(module_name: str, install_hint: str) -> Any:
@@ -742,7 +743,7 @@ def _color_for_segment(
     tuple[float, float, float, float]
         The RGBA color tuple.
     """
-    cmap = cm.get_cmap(cmap_name)
+    cmap = plt.get_cmap(cmap_name)
     if strategy == "route":
         value = (route_index % 20) / 20
     elif strategy == "mode":
@@ -771,26 +772,6 @@ def _line_midpoint(geom: object) -> Point | None:
     if isinstance(geom, MultiLineString) and len(geom.geoms) > 0:
         return geom.geoms[0].interpolate(0.5, normalized=True)
     return None
-
-
-def _iter_line_strings(geom: object) -> list[LineString]:
-    """Iterate over LineString geometries from a geometry object.
-    
-    Parameters
-    ----------
-    geom : object
-        The geometry object to iterate.
-    
-    Returns
-    -------
-    list[LineString]
-        A list of LineString geometries.
-    """
-    if isinstance(geom, LineString):
-        return [geom]
-    if isinstance(geom, MultiLineString):
-        return [line for line in geom.geoms if isinstance(line, LineString) and len(line.coords) >= 2]
-    return []
 
 
 def plot_transport_score_routes(
@@ -939,7 +920,7 @@ def plot_transport_score_routes(
         norm = mcolors.Normalize(vmin=score_min - pad, vmax=score_max + pad)
 
     summary_plot = summary_plot.assign(_plot_transport_score=score_values)
-    cmap = cm.get_cmap(score_cmap)
+    cmap = plt.get_cmap(score_cmap)
     perfect_color = cmap(1.0)
 
     component_cols = [
@@ -1055,6 +1036,7 @@ def plot_transport_score_routes(
         contextily.add_basemap(
             ax,
             source=contextily.providers.OpenStreetMap.Mapnik,
+            headers=_OSM_TILE_HEADERS,
             crs=target_crs,
             reset_extent=False,
             alpha=basemap_alpha,
@@ -1302,7 +1284,7 @@ def plot_commute_map(
             break
 
     if first_crs is None:
-        first_crs = "EPSG:4326"
+        first_crs = config.CRS_WGS84
 
     target_crs = _get_target_crs(normalized_backend, add_basemap, first_crs)
 
@@ -1511,6 +1493,7 @@ def plot_commute_map(
             contextily.add_basemap(
                 ax,
                 source=contextily.providers.OpenStreetMap.Mapnik,
+                headers=_OSM_TILE_HEADERS,
                 crs=target_crs,
                 reset_extent=False,
             )
@@ -1603,65 +1586,46 @@ def plot_commute_map(
     overlay_count = 0
 
     if show_probability_grid and probability_grid_plot is not None:
+        thinning_factor = 100
+        probability_grid_thinned = probability_grid_plot[
+            probability_grid_plot.index.isin(probability_grid_plot.index[::thinning_factor])
+        ].copy()
         feature_group = folium_mod.FeatureGroup(name="Probability grid", show=True)
-        values = pd.Series(probability_grid_plot[probability_column])
-        valid = values.dropna()
+        values = probability_grid_thinned[probability_column].dropna()
         colormap = None
-        if not valid.empty:
-            cmap_obj = cm.get_cmap(probability_cmap)
-            sampled_colors = [mcolors.to_hex(cmap_obj(i / 8)) for i in range(9)]
-            colormap = LinearColormap(sampled_colors, vmin=float(valid.min()), vmax=float(valid.max()))
+        if not values.empty:
+            cmap = plt.get_cmap(probability_cmap)
+            colors = [mcolors.to_hex(cmap(index / 8)) for index in range(9)]
+            colormap = LinearColormap(colors, vmin=float(values.min()), vmax=float(values.max()))
             if show_colorbar:
                 colormap.caption = probability_column
                 colormap.add_to(folium_map)
 
-        # Thin the probability grid for Folium by taking every 100th row
-        if show_probability_grid and probability_grid_plot is not None:
-            thinning_factor = 100
-            if len(probability_grid_plot) > thinning_factor:
-                probability_grid_plot_thinned = probability_grid_plot[
-                    probability_grid_plot.index.isin(probability_grid_plot.index[::thinning_factor])
-                ].copy()
+        def _style_fn(feature: dict[str, Any]) -> dict[str, Any]:
+            value = feature["properties"].get(probability_column)
+            if value is None or pd.isna(value):
+                color = "#00000000"
+            elif colormap is not None:
+                color = colormap(float(value))
             else:
-                probability_grid_plot_thinned = probability_grid_plot.copy()
-            
-            feature_group = folium_mod.FeatureGroup(name="Probability grid", show=True)
-            values = pd.Series(probability_grid_plot_thinned[probability_column])
-            valid = values.dropna()
-            colormap = None
-            if not valid.empty:
-                cmap_obj = cm.get_cmap(probability_cmap)
-                sampled_colors = [mcolors.to_hex(cmap_obj(i / 8)) for i in range(9)]
-                colormap = LinearColormap(sampled_colors, vmin=float(valid.min()), vmax=float(valid.max()))
-                if show_colorbar:
-                    colormap.caption = probability_column
-                    colormap.add_to(folium_map)
+                color = "#1f77b4"
+            return {
+                "fillColor": color,
+                "color": "#666666",
+                "weight": 0.5,
+                "fillOpacity": probability_alpha,
+            }
 
-            def _style_fn(feature: dict[str, Any]) -> dict[str, Any]:
-                """Style function for probability grid GeoJSON features."""
-                value = feature["properties"].get(probability_column)
-                if value is None or pd.isna(value):
-                    color = "#00000000"
-                elif colormap is not None:
-                    color = colormap(float(value))
-                else:
-                    color = "#1f77b4"
-                return {
-                    "fillColor": color,
-                    "color": "#666666",
-                    "weight": 0.5,
-                    "fillOpacity": probability_alpha,
-                }
-
-            tooltip_fields = [probability_column]
-            folium_mod.GeoJson(
-                probability_grid_plot_thinned[[probability_column, "geometry"]].to_json(),
-                style_function=_style_fn,
-                tooltip=folium_mod.GeoJsonTooltip(fields=tooltip_fields, aliases=[probability_column]),
-                name="Probability grid",
-            ).add_to(feature_group)
-            feature_group.add_to(folium_map)
-            overlay_count += 1
+        folium_mod.GeoJson(
+            probability_grid_thinned[[probability_column, "geometry"]].to_json(),
+            style_function=_style_fn,
+            tooltip=folium_mod.GeoJsonTooltip(
+                fields=[probability_column], aliases=[probability_column]
+            ),
+            name="Probability grid",
+        ).add_to(feature_group)
+        feature_group.add_to(folium_map)
+        overlay_count += 1
 
     if show_target_area and target_area_plot is not None:
         feature_group = folium_mod.FeatureGroup(name=target_area_label, show=True)
@@ -2165,12 +2129,10 @@ def plot_histogram(
         **local_hist_kwargs,
     )
 
-    bar_heights = [
-        float(patch.get_height())
-        for patch in ax.patches
-        if pd.notna(patch.get_height())
-    ]
-    histogram_peak = max(bar_heights) if bar_heights else 0.0
+    histogram_peak = max(
+        (float(patch.get_height()) for patch in ax.patches if pd.notna(patch.get_height())),
+        default=0.0,
+    )
     if histogram_peak <= 0.0:
         histogram_peak = float(ax.get_ylim()[1])
 
@@ -2309,7 +2271,7 @@ def _create_isochrones(
         for i in range(len(bins) - 1)
     ]
 
-    points = reachable.to_crs("EPSG:25832").copy()
+    points = reachable.to_crs(config.CRS_LOCAL_METRIC).copy()
     points["time_band"] = pd.cut(
         points["travel_time_min"],
         bins=bins,

@@ -14,6 +14,8 @@ from r5py import TransportMode, TransportNetwork
 from shapely.geometry import Point
 from shapely.ops import linemerge, unary_union
 
+from . import config
+
 
 def _resolve_osm_files(data_dir: str | Path | None = None) -> list[Path]:
     """
@@ -42,17 +44,13 @@ def _resolve_osm_files(data_dir: str | Path | None = None) -> list[Path]:
     # Determine the directory to search for OSM files
     if data_dir is None:
         # Default to 'data/raw/osm' relative to the script's location (parents[2])
-        data_dir = Path(__file__).resolve().parents[2] / "data" / "raw" / "osm"
+        data_dir = config.OSM_DATA_DIR
     else:
         # Convert input to Path object if string is provided
         data_dir = Path(data_dir)
 
     # Define the list of required OSM PBF filenames
-    required_files = [
-        "hamburg-260718.osm.pbf",
-        "niedersachsen-260718.osm.pbf",
-        "schleswig-holstein-260718.osm.pbf",
-    ]
+    required_files = config.OSM_PBF_FILENAMES
 
     # Construct full paths for each required file
     paths = [data_dir / name for name in required_files]
@@ -70,18 +68,17 @@ def _resolve_osm_files(data_dir: str | Path | None = None) -> list[Path]:
 
 def _resolve_gtfs_file(data_dir: str | Path | None = None) -> Path:
     """Resolve the GTFS ZIP file used for public transport routing."""
-    project_root = Path(__file__).resolve().parents[2]
     if data_dir is None:
-        data_dir = project_root / "data" / "raw"
+        data_dir = config.RAW_DATA_DIR
     else:
         data_dir = Path(data_dir)
 
-    gtfs_name = "hvv_Rohdaten_GTFS_Fpl_26.ZIP"
+    gtfs_name = config.GTFS_FILENAME
     candidate_dirs = [
         data_dir,
         data_dir.parent,
         data_dir.parent.parent,
-        project_root / "data" / "raw",
+        config.RAW_DATA_DIR,
     ]
 
     seen_dirs: set[Path] = set()
@@ -118,7 +115,7 @@ def _build_transport_network_cached(combined_path_str: str, gtfs_path_str: str, 
 
 def build_transport_network(
     data_dir: str | Path | None = None,
-    allow_errors: bool = True,
+    allow_errors: bool = config.ALLOW_ROUTING_DATA_ERRORS,
 ) -> TransportNetwork:
     """
     Build an r5py transport network from the local OSM PBF files.
@@ -148,11 +145,11 @@ def build_transport_network(
     gtfs_file = _resolve_gtfs_file(data_dir)
 
     # Define the output directory for the merged OSM file relative to the script
-    combined_dir = Path(__file__).resolve().parents[2] / "data" / "raw" / "osm" / "merged"
+    combined_dir = config.MERGED_OSM_DIR
     # Create the directory structure if it does not already exist
     combined_dir.mkdir(parents=True, exist_ok=True)
     # Define the full path for the merged OSM PBF file
-    combined_path = combined_dir / "northern-germany.osm.pbf"
+    combined_path = config.MERGED_OSM_PATH
 
     # Check if the merged file already exists on the filesystem
     if not combined_path.exists():
@@ -246,7 +243,7 @@ def route_between_points(
     destination: Point | tuple[float, float] | gpd.GeoSeries | gpd.GeoDataFrame,
     transport_modes: Iterable[str] | None = None,
     data_dir: str | Path | None = None,
-    crs: str = "EPSG:4326",
+    crs: str = config.CRS_WGS84,
     departure_time: datetime | date | str | None = None,
 ) -> tuple[float | None, float | None, gpd.GeoDataFrame | None]:
     """Calculate the best route between two locations using specified transport modes.
@@ -295,7 +292,7 @@ def route_between_points(
     """
     # Set default transport modes if not provided
     if transport_modes is None:
-        transport_modes = ["car", "bike"]
+        transport_modes = config.DEFAULT_ROUTE_MODES
     if isinstance(transport_modes, str):
         transport_modes = [transport_modes]
 
@@ -331,8 +328,8 @@ def route_between_points(
     origin_point = _to_point(origin)
     destination_point = _to_point(destination)
 
-    origin_crs = "EPSG:4326" if isinstance(origin, tuple) else crs
-    destination_crs = "EPSG:4326" if isinstance(destination, tuple) else crs
+    origin_crs = config.CRS_WGS84 if isinstance(origin, tuple) else crs
+    destination_crs = config.CRS_WGS84 if isinstance(destination, tuple) else crs
 
     # Create temporary GeoDataFrames for origin and destination for CRS handling
     origin_gdf = gpd.GeoDataFrame({"id": [0]}, geometry=[origin_point], crs=origin_crs)
@@ -349,12 +346,15 @@ def route_between_points(
         destination_gdf = destination_gdf.to_crs(origin_gdf.crs)
 
     # Project coordinates to EPSG:4326 for routing calculations
-    projected_crs = "EPSG:4326"
+    projected_crs = config.CRS_WGS84
     origin_projected = origin_gdf.to_crs(projected_crs)
     destination_projected = destination_gdf.to_crs(projected_crs)
 
     # Build the transport network from local OSM data, tolerating GTFS warnings
-    transport_network = build_transport_network(data_dir=data_dir, allow_errors=True)
+    transport_network = build_transport_network(
+        data_dir=data_dir,
+        allow_errors=config.ALLOW_ROUTING_DATA_ERRORS,
+    )
 
     normalized_departure_time = _normalize_departure_time(departure_time)
     if normalized_departure_time is None and any(mode == "public_transit" for mode in transport_modes):
@@ -381,7 +381,7 @@ def route_between_points(
                 "origins": origin_projected,
                 "destinations": destination_projected,
                 "transport_modes": mode_enums,
-                "snap_to_network": True,
+                "snap_to_network": config.SNAP_TO_NETWORK,
             }
             if normalized_departure_time is not None:
                 request_kwargs["departure"] = normalized_departure_time
@@ -470,14 +470,14 @@ def calculate_reachable_grid(
     origin: gpd.GeoDataFrame,
     departure_time: datetime,
     *,
-    departure_time_window: timedelta = timedelta(minutes=60),
-    analysis_radius_m: float = 20_000,
-    grid_step_m: float = 100,
-    max_travel_time_min: float = 60,
+    departure_time_window: timedelta = config.REACHABILITY_TIME_WINDOW,
+    analysis_radius_m: float = config.REACHABILITY_RADIUS_M,
+    grid_step_m: float = config.REACHABILITY_GRID_STEP_M,
+    max_travel_time_min: float = config.MAX_REACHABILITY_TIME_MIN,
 ) -> gpd.GeoDataFrame:
     """Calculate public-transport travel times to a regular grid around origin."""
-    origin_wgs84 = origin.to_crs("EPSG:4326")
-    origin_projected = origin.to_crs("EPSG:25832")
+    origin_wgs84 = origin.to_crs(config.CRS_WGS84)
+    origin_projected = origin.to_crs(config.CRS_LOCAL_METRIC)
     center = origin_projected.geometry.iloc[0]
 
     # Ensure origin has a unique 'id' column for r5py.TravelTimeMatrix
@@ -506,8 +506,8 @@ def calculate_reachable_grid(
     destinations = gpd.GeoDataFrame(
         {"id": range(1, len(points) + 1)},
         geometry=points,
-        crs="EPSG:25832",
-    ).to_crs("EPSG:4326")
+        crs=config.CRS_LOCAL_METRIC,
+    ).to_crs(config.CRS_WGS84)
 
     ttm = r5py.TravelTimeMatrix(
         transport_network,
@@ -516,7 +516,7 @@ def calculate_reachable_grid(
         departure=departure_time,
         departure_time_window=departure_time_window,
         transport_modes=[TransportMode.TRANSIT, TransportMode.WALK],
-        snap_to_network=True,
+        snap_to_network=config.SNAP_TO_NETWORK,
     )
 
     if ttm.empty:

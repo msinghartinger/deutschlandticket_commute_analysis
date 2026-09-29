@@ -12,6 +12,7 @@ from shapely.geometry.base import BaseGeometry
 from shapely.ops import unary_union
 
 import requests
+from . import config
 
 def download_population_grid() -> pd.DataFrame:
     """
@@ -23,43 +24,20 @@ def download_population_grid() -> pd.DataFrame:
     deutschlandticket-commute-analysis project root (if that ancestor exists),
     and returns the DataFrame.
     """
-    url = (
-        "https://www.destatis.de/static/DE/zensus/gitterdaten/"
-        "Zensus2022_Bevoelkerungszahl.zip"
+    response = requests.get(
+        config.DESTATIS_POPULATION_ZIP_URL,
+        timeout=config.DOWNLOAD_TIMEOUT_SECONDS,
     )
-
-    response = requests.get(url, timeout=120)
     response.raise_for_status()
 
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
         # list contents for debugging purposes
         # print(archive.namelist())
 
-        filename = "Zensus2022_Bevoelkerungszahl_100m-Gitter.csv"
+        with archive.open(config.DESTATIS_POPULATION_CSV_FILENAME) as csv_file:
+            population = pd.read_csv(csv_file, sep=config.DESTATIS_CSV_SEPARATOR)
 
-        with archive.open(filename) as csv_file:
-            population = pd.read_csv(csv_file, sep=";")
-
-    # Determine where to save the CSV: prefer an ancestor named
-    # 'deutschlandticket-commute-analysis' if present, else use the repository
-    # root two levels above this file.
-    repo_dir_name = "deutschlandticket-commute-analysis"
-    current = Path(__file__).resolve()
-    candidate_root = current.parents[2]
-
-    repo_root = None
-    if candidate_root.name == repo_dir_name:
-        repo_root = candidate_root
-    else:
-        for p in candidate_root.parents:
-            if p.name == repo_dir_name:
-                repo_root = p
-                break
-
-    if repo_root is None:
-        repo_root = candidate_root
-
-    output_path = repo_root / "data" / "raw" / "population_grid.csv"
+    output_path = config.POPULATION_GRID_PATH
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Save CSV (use semicolon as in source if desired, here save as standard CSV)
@@ -73,7 +51,7 @@ def download_population_grid() -> pd.DataFrame:
 def random_point_in_polygon(
     polygon: BaseGeometry,
     rng: np.random.Generator,
-    max_attempts: int = 10_000,
+    max_attempts: int = config.POLYGON_SAMPLE_MAX_ATTEMPTS,
 ) -> Point:
     """
     Generate a random point within the bounds of a given polygon using rejection sampling.
@@ -118,8 +96,8 @@ def calculate_sampling_probability_grid(
     population_grid: gpd.GeoDataFrame,
     population_column: str,
     target_area: gpd.GeoDataFrame | None = None,
-    filter_mode: str = "uniform",
-    gaussian_scale: float | None = None,
+    filter_mode: str = config.DEFAULT_POPULATION_FILTER_MODE,
+    gaussian_scale: float | None = config.DEFAULT_GAUSSIAN_SCALE,
 ) -> gpd.GeoDataFrame:
     """
     Prepare a population grid and calculate the sampling probability
@@ -261,11 +239,11 @@ def calculate_sampling_probability_grid(
 def sample_population_weighted_locations(
     population_grid: gpd.GeoDataFrame,
     population_column: str,
-    n: int,
+    n: int = config.SYNTHETIC_EMPLOYEE_COUNT,
     target_area: gpd.GeoDataFrame | None = None,
-    seed: int | None = None,
-    filter_mode: str = "uniform",
-    gaussian_scale: float | None = None,
+    seed: int | None = config.SAMPLING_RANDOM_SEED,
+    filter_mode: str = config.DEFAULT_POPULATION_FILTER_MODE,
+    gaussian_scale: float | None = config.DEFAULT_GAUSSIAN_SCALE,
 ) -> gpd.GeoDataFrame:
     """
     Sample synthetic locations from a population-weighted polygon grid.

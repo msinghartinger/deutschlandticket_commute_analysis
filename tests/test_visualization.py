@@ -14,6 +14,9 @@ from commute_analysis.visualization import (
     _format_time_range,
     _normalize_mode_name,
     plot_commute_map,
+    plot_histogram,
+    plot_sampling_probability_map,
+    plot_transport_score_routes,
 )
 
 
@@ -76,6 +79,18 @@ def _route(
 def test_matplotlib_return_type() -> None:
     ax = plot_commute_map(probability_grid=_probability_grid(), add_basemap=False)
     assert isinstance(ax, Axes)
+
+
+def test_matplotlib_basemap_uses_identifying_user_agent(monkeypatch: pytest.MonkeyPatch) -> None:
+    contextily = pytest.importorskip("contextily")
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(contextily, "add_basemap", lambda *args, **kwargs: calls.append(kwargs))
+
+    plot_commute_map(probability_grid=_probability_grid(), add_basemap=True)
+
+    assert calls[0]["headers"] == {
+        "User-Agent": "deutschlandticket-commute-analysis/0.1.0"
+    }
 
 
 def test_invalid_backend() -> None:
@@ -282,3 +297,72 @@ def test_reuse_existing_folium_map() -> None:
     )
     assert isinstance(fmap2, folium.Map)
     assert fmap2 is fmap
+
+
+def test_sampling_probability_map_uses_density_column_and_overlays() -> None:
+    ax = plot_sampling_probability_map(
+        _probability_grid(),
+        target_area=_target_area(),
+        workplace=(53.51, 10.02),
+        employees=_employees(),
+        add_basemap=False,
+        show_colorbar=False,
+    )
+
+    assert isinstance(ax, Axes)
+    assert len(ax.collections) >= 4
+    assert not ax.axison
+
+
+def test_histogram_renders_density_kde_and_quantiles() -> None:
+    values = pd.Series(range(1, 21), name="commute")
+    ax = plot_histogram(values, bins=5, show_kde=True)
+
+    assert len(ax.patches) == 5
+    assert len(ax.lines) == 6
+    assert ax.get_xlabel() == "commute"
+    assert len(ax.texts) == 5
+
+
+def test_transport_score_routes_render_home_route_and_workplace() -> None:
+    summary = gpd.GeoDataFrame(
+        {
+            "employee_id": ["EMP-001", "EMP-002"],
+            "transport_score": [0.25, 0.85],
+            "relative_time_score": [0.2, 0.8],
+            "absolute_time_score": [0.3, 0.7],
+            "consistency_score": [0.4, 0.6],
+            "walking_score": [0.5, 0.5],
+            "transfers_score": [0.6, 0.4],
+        },
+        geometry=[Point(10.0, 53.5), Point(10.02, 53.51)],
+        crs="EPSG:4326",
+    )
+    routes = gpd.GeoDataFrame(
+        {
+            "employee_id": ["EMP-001"],
+            "morning_q25_route": [LineString([(10.0, 53.5), (10.02, 53.51)])],
+        },
+        geometry="morning_q25_route",
+        crs="EPSG:4326",
+    )
+
+    ax = plot_transport_score_routes(
+        summary_gdf=summary,
+        route_gdf=routes,
+        workplace=(53.52, 10.03),
+        add_basemap=False,
+        show_colorbar=False,
+        label_every_nth_home=1,
+    )
+
+    assert isinstance(ax, Axes)
+    assert len(ax.collections) >= 3
+    assert [text.get_text() for text in ax.get_legend().get_texts()] == [
+        "Workplace",
+        "Employee homes",
+    ]
+    assert len(ax.texts) == 2
+    assert "R:0.20 A:0.30 C:0.40 W:0.50 T:0.60" in [
+        text.get_text() for text in ax.texts
+    ]

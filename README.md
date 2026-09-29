@@ -7,8 +7,8 @@ This project evaluates how attractive public transport is for a set of synthetic
 
 - [notebooks/deutschlandticket_analysis.ipynb](notebooks/deutschlandticket_analysis.ipynb): the full analysis notebook.
 - [notebooks/deutschlandticket_analysis.html](notebooks/deutschlandticket_analysis.html): HTML export of the notebook.
-- [notebooks/deutschlandticket_analysis.pdf](notebooks/deutschlandticket_analysis.pdf): PDF export of the notebook.
 - [notebooks/download_data.ipynb](notebooks/download_data.ipynb): helper notebook to download and prepare raw input data.
+- [notebooks/calculate_transport_scores.ipynb](notebooks/calculate_transport_scores.ipynb): helper notebook to calculate and transport scores for mock employees (not optimized, long compute time).
 
 ## Project Components
 
